@@ -4,13 +4,12 @@ import java.util.Scanner;
 
 public class Main {
 
-    private static final String ARQUIVO_DADOS = "dados_banco.txt";
     private static Banco banco = new Banco();
     private static Scanner scanner = new Scanner(System.in);
 
     public static void main(String[] args) {
 
-        banco.carregarDados(ARQUIVO_DADOS);
+        banco.carregarDados();
 
         int opcao;
 
@@ -34,7 +33,7 @@ public class Main {
 
         } while (opcao != 0);
 
-        banco.salvarDados(ARQUIVO_DADOS);
+        banco.salvarDados();
         scanner.close();
     }
 

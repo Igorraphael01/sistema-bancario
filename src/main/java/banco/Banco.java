@@ -1,6 +1,11 @@
 package banco;
 
-import java.io.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -52,98 +57,119 @@ public class Banco {
         destino.depositar(valor);
     }
 
-    // ---------- PERSISTÊNCIA ----------
+    // ---------- PERSISTÊNCIA (MySQL) ----------
 
-    public void salvarDados(String caminhoArquivo) {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(caminhoArquivo))) {
+    public void salvarDados() {
+        String sqlCliente = "INSERT INTO clientes (cpf, nome) VALUES (?, ?) " +
+                "ON DUPLICATE KEY UPDATE nome = VALUES(nome)";
+
+        String sqlConta = "INSERT INTO contas (numero, tipo, saldo, cpf_cliente, limite_cheque_especial, taxa_rendimento_mensal) " +
+                "VALUES (?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE saldo = VALUES(saldo), " +
+                "limite_cheque_especial = VALUES(limite_cheque_especial), " +
+                "taxa_rendimento_mensal = VALUES(taxa_rendimento_mensal)";
+
+        try (Connection conn = ConexaoBD.conectar();
+             PreparedStatement psCliente = conn.prepareStatement(sqlCliente);
+             PreparedStatement psConta = conn.prepareStatement(sqlConta)) {
+
             for (Cliente cliente : clientes) {
-                writer.write("CLIENTE;" + cliente.getNome() + ";" + cliente.getCpf());
-                writer.newLine();
+                psCliente.setString(1, cliente.getCpf());
+                psCliente.setString(2, cliente.getNome());
+                psCliente.addBatch();
 
                 for (Conta conta : cliente.getContas()) {
+                    String tipo;
+                    Double limite = null;
+                    Double taxa = null;
 
                     if (conta instanceof ContaCorrente cc) {
-                        writer.write("CONTACORRENTE;" + cc.getNumero() + ";" + cc.getSaldo()
-                                + ";" + cliente.getCpf() + ";" + cc.getLimiteChequeEspecial());
-
+                        tipo = "CORRENTE";
+                        limite = cc.getLimiteChequeEspecial();
                     } else if (conta instanceof ContaPoupanca cp) {
-                        writer.write("CONTAPOUPANCA;" + cp.getNumero() + ";" + cp.getSaldo()
-                                + ";" + cliente.getCpf() + ";" + cp.getTaxaRendimentoMensal());
-
+                        tipo = "POUPANCA";
+                        taxa = cp.getTaxaRendimentoMensal();
                     } else {
-                        writer.write("CONTA;" + conta.getNumero() + ";" + conta.getSaldo()
-                                + ";" + cliente.getCpf());
+                        tipo = "COMUM";
                     }
 
-                    writer.newLine();
+                    psConta.setInt(1, conta.getNumero());
+                    psConta.setString(2, tipo);
+                    psConta.setDouble(3, conta.getSaldo());
+                    psConta.setString(4, cliente.getCpf());
+
+                    if (limite != null) {
+                        psConta.setDouble(5, limite);
+                    } else {
+                        psConta.setNull(5, Types.DOUBLE);
+                    }
+
+                    if (taxa != null) {
+                        psConta.setDouble(6, taxa);
+                    } else {
+                        psConta.setNull(6, Types.DOUBLE);
+                    }
+
+                    psConta.addBatch();
                 }
             }
-            System.out.println("Dados salvos com sucesso em " + caminhoArquivo);
-        } catch (IOException e) {
-            System.out.println("Erro ao salvar dados: " + e.getMessage());
+
+            psCliente.executeBatch();
+            psConta.executeBatch();
+
+            System.out.println("Dados salvos com sucesso no MySQL!");
+        } catch (SQLException e) {
+            System.out.println("Erro ao salvar dados no MySQL: " + e.getMessage());
         }
     }
 
-    public void carregarDados(String caminhoArquivo) {
-        File arquivo = new File(caminhoArquivo);
-        if (!arquivo.exists()) {
-            System.out.println("Nenhum arquivo de dados encontrado. Começando do zero.");
-            return;
-        }
+    public void carregarDados() {
+        clientes.clear();
 
-        try (BufferedReader reader = new BufferedReader(new FileReader(arquivo))) {
-            String linha;
+        String sqlClientes = "SELECT cpf, nome FROM clientes";
+        String sqlContas = "SELECT numero, tipo, saldo, cpf_cliente, limite_cheque_especial, taxa_rendimento_mensal FROM contas";
 
-            while ((linha = reader.readLine()) != null) {
-                String[] partes = linha.split(";");
+        try (Connection conn = ConexaoBD.conectar();
+             Statement stClientes = conn.createStatement();
+             ResultSet rsClientes = stClientes.executeQuery(sqlClientes)) {
 
-                switch (partes[0]) {
+            while (rsClientes.next()) {
+                String cpf = rsClientes.getString("cpf");
+                String nome = rsClientes.getString("nome");
+                clientes.add(new Cliente(nome, cpf));
+            }
 
-                    case "CLIENTE" -> {
-                        String nome = partes[1];
-                        String cpf = partes[2];
-                        clientes.add(new Cliente(nome, cpf));
+            try (Statement stContas = conn.createStatement();
+                 ResultSet rsContas = stContas.executeQuery(sqlContas)) {
+
+                while (rsContas.next()) {
+                    int numero = rsContas.getInt("numero");
+                    String tipo = rsContas.getString("tipo");
+                    double saldo = rsContas.getDouble("saldo");
+                    String cpfCliente = rsContas.getString("cpf_cliente");
+
+                    Cliente dono = buscarClientePorCpf(cpfCliente);
+                    if (dono == null) {
+                        continue;
                     }
 
-                    case "CONTA" -> {
-                        int numero = Integer.parseInt(partes[1]);
-                        double saldo = Double.parseDouble(partes[2]);
-                        String cpfDono = partes[3];
-
-                        Cliente dono = buscarClientePorCpf(cpfDono);
-                        if (dono != null) {
-                            dono.adicionarConta(new Conta(numero, saldo));
-                        }
-                    }
-
-                    case "CONTACORRENTE" -> {
-                        int numero = Integer.parseInt(partes[1]);
-                        double saldo = Double.parseDouble(partes[2]);
-                        String cpfDono = partes[3];
-                        double limite = Double.parseDouble(partes[4]);
-
-                        Cliente dono = buscarClientePorCpf(cpfDono);
-                        if (dono != null) {
+                    switch (tipo) {
+                        case "CORRENTE" -> {
+                            double limite = rsContas.getDouble("limite_cheque_especial");
                             dono.adicionarConta(new ContaCorrente(numero, saldo, limite));
                         }
-                    }
-
-                    case "CONTAPOUPANCA" -> {
-                        int numero = Integer.parseInt(partes[1]);
-                        double saldo = Double.parseDouble(partes[2]);
-                        String cpfDono = partes[3];
-                        double taxa = Double.parseDouble(partes[4]);
-
-                        Cliente dono = buscarClientePorCpf(cpfDono);
-                        if (dono != null) {
+                        case "POUPANCA" -> {
+                            double taxa = rsContas.getDouble("taxa_rendimento_mensal");
                             dono.adicionarConta(new ContaPoupanca(numero, saldo, taxa));
                         }
+                        default -> dono.adicionarConta(new Conta(numero, saldo));
                     }
                 }
             }
-            System.out.println("Dados carregados com sucesso de " + caminhoArquivo);
-        } catch (IOException e) {
-            System.out.println("Erro ao carregar dados: " + e.getMessage());
+
+            System.out.println("Dados carregados com sucesso do MySQL!");
+        } catch (SQLException e) {
+            System.out.println("Erro ao carregar dados do MySQL: " + e.getMessage());
         }
     }
 
